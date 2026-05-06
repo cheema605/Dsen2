@@ -135,6 +135,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-items", type=int, default=0, help="Limit number of STAC scenes to use (0 unlimited)")
     parser.add_argument("--max-total-patches", type=int, default=0, help="Limit total patches across scenes (0 unlimited)")
+    parser.add_argument("--prefetch-cache", type=str, default=None, help="Directory to prefetch patches into and load from")
+    parser.add_argument("--prefetch-max", type=int, default=256, help="Max patches to prefetch into cache")
+    parser.add_argument("--dry-run", action="store_true", help="Index dataset, optionally prefetch and estimate epoch time, then exit")
     parser.add_argument("--synthetic", action="store_true", help="Use synthetic data for testing (no STAC required)")
     parser.add_argument("--synthetic-samples", type=int, default=32, help="Number of synthetic samples")
     return parser.parse_args()
@@ -162,6 +165,7 @@ def main() -> None:
                 max_total_patches=max_total_patches,
                 seed=args.seed,
                 verbose=True,
+                cache_dir=args.prefetch_cache,
             )
             print("Successfully loaded STAC dataset")
         except RuntimeError as e:
@@ -176,6 +180,56 @@ def main() -> None:
         print("Sample read test: OK")
     except Exception as exc:
         print(f"Warning: reading a sample failed: {exc}")
+
+    # prefetch diagnostic: time reading a few samples to detect slow remote I/O
+    try:
+        import time
+        prefetch_n = min(len(dataset), max(1, args.batch_size), 8)
+        print(f"Prefetch diagnostic: timing read of {prefetch_n} samples...")
+        times = []
+        for i in range(prefetch_n):
+            t0 = time.perf_counter()
+            _ = dataset[i]
+            t1 = time.perf_counter()
+            elapsed = t1 - t0
+            times.append(elapsed)
+            print(f"  sample {i} read time: {elapsed:.3f}s")
+        avg = sum(times) / len(times)
+        print(f"Prefetch diagnostic complete. avg sample read time: {avg:.3f}s")
+        if avg > 2.0:
+            print("Warning: average sample read time is high — remote COG reads may be slow. Consider reducing caps or using --synthetic.")
+    except Exception as exc:
+        print(f"Prefetch diagnostic failed: {exc}")
+
+    # optional prefetch to cache (writes .npz files)
+    if args.prefetch_cache is not None:
+        if hasattr(dataset, "prefetch_to_cache"):
+            try:
+                print(f"Prefetching up to {args.prefetch_max} patches into {args.prefetch_cache} ...")
+                written = dataset.prefetch_to_cache(args.prefetch_cache, max_files=args.prefetch_max)
+                print(f"Prefetch complete: wrote {written} files")
+            except Exception as exc:
+                print(f"Prefetch to cache failed: {exc}")
+        else:
+            print("Prefetch cache requested but dataset does not support prefetching; skipping.")
+
+    # dry-run mode: estimate epoch time and exit
+    if args.dry_run:
+        try:
+            # use measured avg if available, else re-run a tiny measurement
+            measured_avg = locals().get("avg", None)
+            if measured_avg is None:
+                import time as _time
+                t0 = _time.perf_counter()
+                _ = dataset[0]
+                measured_avg = _time.perf_counter() - t0
+            est_sample_proc = 0.01  # rough model processing per sample
+            est_epoch_time = len(dataset) * (measured_avg + est_sample_proc)
+            print(f"Dry-run: dataset size {len(dataset)} samples")
+            print(f"Dry-run: avg sample read time {measured_avg:.3f}s, est epoch time {est_epoch_time/60.0:.2f} minutes")
+        except Exception as exc:
+            print(f"Dry-run estimation failed: {exc}")
+        return
     
     train_dataset, val_dataset = split_dataset(dataset, validation_split=args.validation_split, seed=args.seed)
     train_loader = build_dataloader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)

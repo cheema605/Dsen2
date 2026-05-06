@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import os
+
+# Disable EC2 metadata lookup to prevent timeout on non-AWS machines
+# This must happen before any boto3/rasterio imports
+os.environ.setdefault('AWS_EC2_METADATA_DISABLED', 'true')
+os.environ.setdefault('GDAL_DISABLE_READDIR_ON_OPEN', 'TRUE')
+
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+import os
 
 import random
 
@@ -102,7 +111,11 @@ def search_stac_items(
             
             # Sign items with planetary_computer if available
             if planetary_computer is not None and items:
-                items = [planetary_computer.sign(item) for item in items]
+                try:
+                    items = [planetary_computer.sign(item) for item in items]
+                except Exception as e:
+                    if False:  # Log but don't fail if signing fails
+                        print(f"Warning: planetary_computer signing failed: {e}")
             
             if items:
                 print(f"Successfully found {len(items)} Sentinel-2 scenes")
@@ -150,12 +163,23 @@ def _read_window_stack(
     asset_hrefs: Sequence[str],
     window: Window,
     normalize: bool = True,
+    verbose: bool = False,
 ) -> torch.Tensor:
+    import time
     _require_rasterio()
     bands: List[np.ndarray] = []
-    for href in asset_hrefs:
-        with rasterio.open(href) as src:
-            array = src.read(1, window=window, boundless=False).astype(np.float32)
+    for idx, href in enumerate(asset_hrefs):
+        t0 = time.perf_counter()
+        try:
+            with rasterio.open(href) as src:
+                array = src.read(1, window=window, boundless=False).astype(np.float32)
+            t1 = time.perf_counter()
+            if verbose:
+                print(f"    band {idx} ({href[:80]}...) read in {t1-t0:.3f}s")
+        except Exception as e:
+            t1 = time.perf_counter()
+            print(f"    band {idx} read failed after {t1-t0:.3f}s: {e}")
+            raise
         if normalize:
             array = array / 10000.0
         bands.append(array)
@@ -189,6 +213,7 @@ class WaldProtocolDataset(Dataset):
         max_patches_per_item: Optional[int] = None,
         max_items_to_use: Optional[int] = None,
         max_total_patches: Optional[int] = None,
+        cache_dir: Optional[str] = None,
         seed: int = 42,
         verbose: bool = True,
     ) -> None:
@@ -199,6 +224,7 @@ class WaldProtocolDataset(Dataset):
         self.max_patches_per_item = max_patches_per_item
         self.max_items_to_use = max_items_to_use
         self.max_total_patches = max_total_patches
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self.seed = seed
         self.verbose = verbose
 
@@ -219,6 +245,9 @@ class WaldProtocolDataset(Dataset):
         self.patch_index: List[PatchIndex] = self._build_patch_index()
         if self.verbose:
             print(f"Patch index ready with {len(self.patch_index)} samples")
+
+        if self.cache_dir is not None:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_patch_index(self) -> List[PatchIndex]:
         _require_rasterio()
@@ -257,22 +286,48 @@ class WaldProtocolDataset(Dataset):
         patch = self.patch_index[index]
         item = self.items[patch.item_index]
 
+        # try loading from cache if available
+        if self.cache_dir is not None:
+            cache_file = self.cache_dir / f"patch_{patch.item_index}_{patch.row_10m}_{patch.col_10m}.npz"
+            if cache_file.exists():
+                data = np.load(str(cache_file))
+                return {
+                    "input": torch.from_numpy(data["input"]).float(),
+                    "target": torch.from_numpy(data["target"]).float(),
+                    "guide_10m": torch.from_numpy(data["guide_10m"]).float(),
+                    "guide_20m": torch.from_numpy(data["guide_20m"]).float(),
+                    "blurry_20m": torch.from_numpy(data["blurry_20m"]).float(),
+                    "metadata": torch.tensor([patch.item_index, patch.row_10m, patch.col_10m], dtype=torch.int64),
+                }
+
         guide_hrefs = [_resolve_asset_href(item, band) for band in GUIDE_BANDS_10M]
         target_hrefs = [_resolve_asset_href(item, band) for band in TARGET_BANDS_20M]
 
         guide_window_10m = Window(patch.col_10m, patch.row_10m, self.patch_size_10m, self.patch_size_10m)
-        guide_10m = _read_window_stack(guide_hrefs, guide_window_10m)
+        guide_10m = _read_window_stack(guide_hrefs, guide_window_10m, verbose=False)
 
         row_20m = patch.row_10m // 2
         col_20m = patch.col_10m // 2
         target_window_20m = Window(col_20m, row_20m, self.patch_size_20m, self.patch_size_20m)
 
         guide_20m = _downsample(guide_10m, (self.patch_size_20m, self.patch_size_20m))
-        target_20m = _read_window_stack(target_hrefs, target_window_20m)
+        target_20m = _read_window_stack(target_hrefs, target_window_20m, verbose=False)
         blurry_40m = _downsample(target_20m, (self.patch_size_20m // 2, self.patch_size_20m // 2))
         blurry_20m = _upsample(blurry_40m, (self.patch_size_20m, self.patch_size_20m))
 
         model_input = torch.cat([guide_20m, blurry_20m], dim=0)
+
+        # save to cache if requested
+        if self.cache_dir is not None:
+            cache_file = self.cache_dir / f"patch_{patch.item_index}_{patch.row_10m}_{patch.col_10m}.npz"
+            np.savez_compressed(
+                str(cache_file),
+                input=model_input.numpy(),
+                target=target_20m.numpy(),
+                guide_10m=guide_10m.numpy(),
+                guide_20m=guide_20m.numpy(),
+                blurry_20m=blurry_20m.numpy(),
+            )
 
         return {
             "input": model_input.float(),
@@ -282,6 +337,36 @@ class WaldProtocolDataset(Dataset):
             "blurry_20m": blurry_20m.float(),
             "metadata": torch.tensor([patch.item_index, patch.row_10m, patch.col_10m], dtype=torch.int64),
         }
+
+    def prefetch_to_cache(self, cache_dir: str, max_files: Optional[int] = None) -> int:
+        """Prefetch patch files and store them in cache_dir as compressed npz files.
+
+        Returns the number of files written.
+        """
+        cache_path = Path(cache_dir)
+        cache_path.mkdir(parents=True, exist_ok=True)
+        written = 0
+        for idx, patch in enumerate(self.patch_index):
+            if max_files is not None and written >= max_files:
+                break
+            cache_file = cache_path / f"patch_{patch.item_index}_{patch.row_10m}_{patch.col_10m}.npz"
+            if cache_file.exists():
+                written += 1
+                continue
+            try:
+                sample = self.__getitem__(idx)
+            except Exception:
+                continue
+            np.savez_compressed(
+                str(cache_file),
+                input=sample["input"].numpy(),
+                target=sample["target"].numpy(),
+                guide_10m=sample["guide_10m"].numpy(),
+                guide_20m=sample["guide_20m"].numpy(),
+                blurry_20m=sample["blurry_20m"].numpy(),
+            )
+            written += 1
+        return written
 
 
 def build_dataloader(
