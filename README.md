@@ -98,6 +98,25 @@ python diagnostics.py \
   --num-samples 8
 ```
 
+## Quick Visuals
+
+If you only need a small number of visual samples to inspect model outputs, use `visualize.py`. It runs the model on a few indexed patches (defaults to a tiny index) and writes comparison images and per-band grayscale images.
+
+Example (small, fast):
+```bash
+python visualize.py \
+  --checkpoint ./checkpoints/enhanced_dsen2_best.pt \
+  --samples 4 \
+  --max-items 2 \
+  --max-patches-per-item 8 \
+  --max-total-patches 16 \
+  --output-dir ./outputs/visuals
+```
+
+The script saves `sample_i_comparison.png` and a `sample_i_bands/` folder with per-band grayscale comparisons for each sample.
+
+If you'd like CSV output of the per-band numeric metrics or internal SE attention weights, tell me and I'll add it.
+
 Output includes:
 - Scene ID and asset hrefs (http/s3 URLs)
 - Per-sample read time
