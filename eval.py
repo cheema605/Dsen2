@@ -39,8 +39,8 @@ def compute_rmse(model: EnhancedDSen2, dataloader: torch.utils.data.DataLoader, 
     squared_error = 0.0
     pixel_count = 0
     for batch in dataloader:
-        inputs = batch["input"].to(device)
-        targets = batch["target"].to(device)
+        inputs = batch["input"].to(device, non_blocking=True)
+        targets = batch["target"].to(device, non_blocking=True)
         predictions = model(inputs)
         squared_error += torch.sum((predictions - targets) ** 2).item()
         pixel_count += targets.numel()
@@ -170,9 +170,14 @@ def print_band_report(sample: Dict[str, torch.Tensor], prediction: torch.Tensor)
 def main() -> None:
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        print("Using device: cuda")
 
     dataset = WaldProtocolDataset()
-    dataloader = build_dataloader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
+    pin_memory = True if device.type == "cuda" else False
+    dataloader = build_dataloader(
+        dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False, pin_memory=pin_memory
+    )
 
     model = EnhancedDSen2(
         input_channels=MODEL.input_channels,
@@ -187,7 +192,8 @@ def main() -> None:
     print(f"Final RMSE: {rmse:.6f}")
 
     sample = dataset[args.sample_index]
-    prediction = model(sample["input"].unsqueeze(0).to(device)).cpu()
+    input_tensor = sample["input"].unsqueeze(0).to(device, non_blocking=True)
+    prediction = model(input_tensor).cpu()
     plot_comparison(sample, prediction, args.output_dir / "comparison.png")
     if args.band_report:
         print_band_report(sample, prediction)
