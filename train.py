@@ -133,6 +133,8 @@ def parse_args() -> argparse.Namespace:
         default=512,
         help="Maximum number of sampled patches per scene (use <=0 for unlimited)",
     )
+    parser.add_argument("--max-items", type=int, default=0, help="Limit number of STAC scenes to use (0 unlimited)")
+    parser.add_argument("--max-total-patches", type=int, default=0, help="Limit total patches across scenes (0 unlimited)")
     parser.add_argument("--synthetic", action="store_true", help="Use synthetic data for testing (no STAC required)")
     parser.add_argument("--synthetic-samples", type=int, default=32, help="Number of synthetic samples")
     return parser.parse_args()
@@ -152,14 +154,28 @@ def main() -> None:
     else:
         try:
             max_patches = args.max_patches_per_item if args.max_patches_per_item > 0 else None
-            dataset = WaldProtocolDataset(max_patches_per_item=max_patches, seed=args.seed, verbose=True)
+            max_items_to_use = args.max_items if args.max_items > 0 else None
+            max_total_patches = args.max_total_patches if args.max_total_patches > 0 else None
+            dataset = WaldProtocolDataset(
+                max_patches_per_item=max_patches,
+                max_items_to_use=max_items_to_use,
+                max_total_patches=max_total_patches,
+                seed=args.seed,
+                verbose=True,
+            )
             print("Successfully loaded STAC dataset")
         except RuntimeError as e:
             print(f"STAC loading failed: {e}")
             print("Falling back to synthetic dataset. To use real data, ensure network connectivity.")
             dataset = SyntheticDataset(num_samples=args.synthetic_samples, seed=args.seed)
-
     print(f"Dataset size: {len(dataset)} samples")
+
+    # quick read test of first sample to expose remote read errors early
+    try:
+        _ = dataset[0]
+        print("Sample read test: OK")
+    except Exception as exc:
+        print(f"Warning: reading a sample failed: {exc}")
     
     train_dataset, val_dataset = split_dataset(dataset, validation_split=args.validation_split, seed=args.seed)
     train_loader = build_dataloader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)

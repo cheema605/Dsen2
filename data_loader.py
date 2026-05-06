@@ -187,6 +187,8 @@ class WaldProtocolDataset(Dataset):
         stac_url: str = STAC.url,
         collection: str = STAC.collection,
         max_patches_per_item: Optional[int] = None,
+        max_items_to_use: Optional[int] = None,
+        max_total_patches: Optional[int] = None,
         seed: int = 42,
         verbose: bool = True,
     ) -> None:
@@ -195,6 +197,8 @@ class WaldProtocolDataset(Dataset):
         self.overlap_10m = overlap_10m
         self.stride_10m = patch_size_10m - overlap_10m
         self.max_patches_per_item = max_patches_per_item
+        self.max_items_to_use = max_items_to_use
+        self.max_total_patches = max_total_patches
         self.seed = seed
         self.verbose = verbose
 
@@ -208,6 +212,8 @@ class WaldProtocolDataset(Dataset):
                 collection=collection,
             )
         self.items = list(items)
+        if self.max_items_to_use is not None and self.max_items_to_use > 0:
+            self.items = self.items[: self.max_items_to_use]
         if self.verbose:
             print(f"Building patch index from {len(self.items)} scenes...")
         self.patch_index: List[PatchIndex] = self._build_patch_index()
@@ -237,6 +243,10 @@ class WaldProtocolDataset(Dataset):
             patch_index.extend(item_positions)
             if self.verbose:
                 print(f"  Added {len(item_positions)} patches (running total: {len(patch_index)})")
+            if self.max_total_patches is not None and self.max_total_patches > 0 and len(patch_index) >= self.max_total_patches:
+                if self.verbose:
+                    print(f"Reached max total patches: {self.max_total_patches}. Stopping indexing.")
+                return patch_index[: self.max_total_patches]
         return patch_index
 
     def __len__(self) -> int:
