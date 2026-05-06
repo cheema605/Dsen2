@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import random
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -184,11 +186,17 @@ class WaldProtocolDataset(Dataset):
         overlap_10m: int = PATCH.overlap_10m,
         stac_url: str = STAC.url,
         collection: str = STAC.collection,
+        max_patches_per_item: Optional[int] = None,
+        seed: int = 42,
+        verbose: bool = True,
     ) -> None:
         self.patch_size_10m = patch_size_10m
         self.patch_size_20m = patch_size_20m
         self.overlap_10m = overlap_10m
         self.stride_10m = patch_size_10m - overlap_10m
+        self.max_patches_per_item = max_patches_per_item
+        self.seed = seed
+        self.verbose = verbose
 
         if items is None:
             items = search_stac_items(
@@ -200,19 +208,35 @@ class WaldProtocolDataset(Dataset):
                 collection=collection,
             )
         self.items = list(items)
+        if self.verbose:
+            print(f"Building patch index from {len(self.items)} scenes...")
         self.patch_index: List[PatchIndex] = self._build_patch_index()
+        if self.verbose:
+            print(f"Patch index ready with {len(self.patch_index)} samples")
 
     def _build_patch_index(self) -> List[PatchIndex]:
         _require_rasterio()
         patch_index: List[PatchIndex] = []
         for item_index, item in enumerate(self.items):
+            if self.verbose:
+                print(f"Indexing scene {item_index + 1}/{len(self.items)}")
             guide_href = _resolve_asset_href(item, "B02")
             with rasterio.open(guide_href) as src:
                 width = src.width
                 height = src.height
-            for row_10m in _build_start_positions(height, self.patch_size_10m, self.stride_10m):
-                for col_10m in _build_start_positions(width, self.patch_size_10m, self.stride_10m):
-                    patch_index.append(PatchIndex(item_index=item_index, row_10m=row_10m, col_10m=col_10m))
+            starts_row = _build_start_positions(height, self.patch_size_10m, self.stride_10m)
+            starts_col = _build_start_positions(width, self.patch_size_10m, self.stride_10m)
+            item_positions = [
+                PatchIndex(item_index=item_index, row_10m=row_10m, col_10m=col_10m)
+                for row_10m in starts_row
+                for col_10m in starts_col
+            ]
+            if self.max_patches_per_item is not None and len(item_positions) > self.max_patches_per_item:
+                rng = random.Random(self.seed + item_index)
+                item_positions = rng.sample(item_positions, self.max_patches_per_item)
+            patch_index.extend(item_positions)
+            if self.verbose:
+                print(f"  Added {len(item_positions)} patches (running total: {len(patch_index)})")
         return patch_index
 
     def __len__(self) -> int:

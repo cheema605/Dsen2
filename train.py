@@ -79,7 +79,8 @@ def train_one_epoch(
     model.train()
     running_squared_error = 0.0
     pixel_count = 0
-    for batch in dataloader:
+    total_batches = len(dataloader)
+    for batch_idx, batch in enumerate(dataloader, start=1):
         inputs, targets = _move_batch_to_device(batch, device)
         optimizer.zero_grad(set_to_none=True)
         predictions = model(inputs)
@@ -90,6 +91,10 @@ def train_one_epoch(
 
         running_squared_error += torch.sum((predictions.detach() - targets) ** 2).item()
         pixel_count += targets.numel()
+
+        if batch_idx % 50 == 0 or batch_idx == total_batches:
+            current_rmse = math.sqrt(running_squared_error / max(1, pixel_count))
+            print(f"  batch {batch_idx}/{total_batches} | running RMSE: {current_rmse:.6f}")
 
     return math.sqrt(running_squared_error / max(1, pixel_count))
 
@@ -122,6 +127,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-split", type=float, default=TRAINING.validation_split)
     parser.add_argument("--checkpoint-dir", type=Path, default=TRAINING.checkpoint_dir)
     parser.add_argument("--seed", type=int, default=TRAINING.seed)
+    parser.add_argument(
+        "--max-patches-per-item",
+        type=int,
+        default=512,
+        help="Maximum number of sampled patches per scene (use <=0 for unlimited)",
+    )
     parser.add_argument("--synthetic", action="store_true", help="Use synthetic data for testing (no STAC required)")
     parser.add_argument("--synthetic-samples", type=int, default=32, help="Number of synthetic samples")
     return parser.parse_args()
@@ -140,12 +151,15 @@ def main() -> None:
         print(f"Using synthetic dataset with {args.synthetic_samples} samples")
     else:
         try:
-            dataset = WaldProtocolDataset()
+            max_patches = args.max_patches_per_item if args.max_patches_per_item > 0 else None
+            dataset = WaldProtocolDataset(max_patches_per_item=max_patches, seed=args.seed, verbose=True)
             print("Successfully loaded STAC dataset")
         except RuntimeError as e:
             print(f"STAC loading failed: {e}")
             print("Falling back to synthetic dataset. To use real data, ensure network connectivity.")
             dataset = SyntheticDataset(num_samples=args.synthetic_samples, seed=args.seed)
+
+    print(f"Dataset size: {len(dataset)} samples")
     
     train_dataset, val_dataset = split_dataset(dataset, validation_split=args.validation_split, seed=args.seed)
     train_loader = build_dataloader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
