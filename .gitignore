@@ -20,6 +20,11 @@ outputs/
 *.pt
 *.pth
 
+# Cache directories
+cache_prefetch/
+cache*/
+*_cache/
+
 # Environment files
 .env
 .env.*
