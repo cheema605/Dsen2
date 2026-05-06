@@ -30,6 +30,8 @@ def _normalize_for_display(image: np.ndarray) -> np.ndarray:
 
 def _rgb_from_tensor(tensor: torch.Tensor, channels: Tuple[int, int, int]) -> np.ndarray:
     array = tensor.detach().cpu().numpy()
+    if array.ndim == 4:
+        array = array[0]
     image = array[list(channels), :, :]
     image = np.transpose(image, (1, 2, 0))
     return _normalize_for_display(image)
@@ -40,7 +42,11 @@ def save_comparison(sample, pred, out_path: Path) -> None:
     guide_rgb = _rgb_from_tensor(sample["guide_20m"], (2, 1, 0))
     target_rgb = _rgb_from_tensor(sample["target"], (0, 1, 2))
     pred_rgb = _rgb_from_tensor(pred, (0, 1, 2))
-    error_map = np.mean(np.abs(sample["target"].detach().cpu().numpy() - pred.detach().cpu().numpy()), axis=0)
+    target = sample["target"].detach().cpu().numpy()
+    pred_array = pred.detach().cpu().numpy()
+    if pred_array.ndim == 4:
+        pred_array = pred_array[0]
+    error_map = np.mean(np.abs(target - pred_array), axis=0)
 
     fig, axes = plt.subplots(1, 4, figsize=(16, 4))
     axes[0].imshow(guide_rgb)
