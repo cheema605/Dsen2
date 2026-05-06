@@ -30,6 +30,11 @@ except ImportError as exc:  # pragma: no cover - runtime dependency guard
 else:
     _PYSTAC_IMPORT_ERROR = None
 
+try:
+    import planetary_computer
+except ImportError:  # pragma: no cover
+    planetary_computer = None
+
 
 BAND_ASSET_CANDIDATES: Dict[str, Tuple[str, ...]] = {
     "B02": ("B02", "blue"),
@@ -71,19 +76,51 @@ def search_stac_items(
     max_items: int = STAC.max_items,
     url: str = STAC.url,
     collection: str = STAC.collection,
+    max_retries: int = 3,
 ) -> List[object]:
-    """Query Earth Search for Sentinel-2 L2A items."""
+    """Query Earth Search for Sentinel-2 L2A items with retry logic.
+    
+    Uses planetary-computer module if available for better AWS connectivity.
+    """
 
     _require_pystac()
-    client = Client.open(url)
-    search = client.search(
-        collections=[collection],
-        bbox=bbox,
-        datetime=datetime_range,
-        query={"eo:cloud_cover": {"lt": max_cloud_cover}},
-        max_items=max_items,
-    )
-    return list(search.items())
+    
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            client = Client.open(url)
+            search = client.search(
+                collections=[collection],
+                bbox=bbox,
+                datetime=datetime_range,
+                query={"eo:cloud_cover": {"lt": max_cloud_cover}},
+                max_items=max_items,
+            )
+            items = list(search.items())
+            
+            # Sign items with planetary_computer if available
+            if planetary_computer is not None and items:
+                items = [planetary_computer.sign(item) for item in items]
+            
+            if items:
+                print(f"Successfully found {len(items)} Sentinel-2 scenes")
+            return items
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_retries - 1:
+                wait_seconds = 2 ** attempt
+                print(f"STAC search failed (attempt {attempt + 1}/{max_retries}): {exc}")
+                print(f"Retrying in {wait_seconds}s...")
+                import time
+                time.sleep(wait_seconds)
+            else:
+                print(f"STAC search failed after {max_retries} attempts")
+    
+    raise RuntimeError(
+        f"Failed to query STAC catalog after {max_retries} attempts. "
+        f"Last error: {last_error}. "
+        f"Verify network connectivity or try using --synthetic flag to test locally."
+    ) from last_error
 
 
 def _resolve_asset_href(item: object, band_name: str) -> str:

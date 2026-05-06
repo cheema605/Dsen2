@@ -17,6 +17,31 @@ from data_loader import WaldProtocolDataset, build_dataloader, split_dataset
 from model import EnhancedDSen2
 
 
+# Synthetic dataset for testing without STAC access
+class SyntheticDataset(torch.utils.data.Dataset):
+    """Random patches for testing without STAC/network access."""
+    def __init__(self, num_samples: int = 16, patch_size: int = 64, seed: int = 42):
+        self.num_samples = num_samples
+        self.patch_size = patch_size
+        self.seed = seed
+    
+    def __len__(self):
+        return self.num_samples
+    
+    def __getitem__(self, idx):
+        gen = torch.Generator().manual_seed(self.seed + idx)
+        guide_20m = torch.randn(4, self.patch_size, self.patch_size, generator=gen) * 0.2 + 0.5
+        target_20m = torch.randn(6, self.patch_size, self.patch_size, generator=gen) * 0.2 + 0.5
+        blurry_20m = torch.randn(6, self.patch_size, self.patch_size, generator=gen) * 0.2 + 0.45
+        return {
+            "input": torch.cat([torch.clamp(guide_20m, 0, 1), torch.clamp(blurry_20m, 0, 1)], dim=0).float(),
+            "target": torch.clamp(target_20m, 0, 1).float(),
+            "guide_20m": torch.clamp(guide_20m, 0, 1).float(),
+            "blurry_20m": torch.clamp(blurry_20m, 0, 1).float(),
+            "metadata": torch.tensor([0, 0, 0], dtype=torch.int64),
+        }
+
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -97,6 +122,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-split", type=float, default=TRAINING.validation_split)
     parser.add_argument("--checkpoint-dir", type=Path, default=TRAINING.checkpoint_dir)
     parser.add_argument("--seed", type=int, default=TRAINING.seed)
+    parser.add_argument("--synthetic", action="store_true", help="Use synthetic data for testing (no STAC required)")
+    parser.add_argument("--synthetic-samples", type=int, default=32, help="Number of synthetic samples")
     return parser.parse_args()
 
 
@@ -105,7 +132,21 @@ def main() -> None:
     set_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = WaldProtocolDataset()
+    print(f"Using device: {device}")
+    
+    # Load dataset with fallback to synthetic
+    if args.synthetic:
+        dataset = SyntheticDataset(num_samples=args.synthetic_samples, seed=args.seed)
+        print(f"Using synthetic dataset with {args.synthetic_samples} samples")
+    else:
+        try:
+            dataset = WaldProtocolDataset()
+            print("Successfully loaded STAC dataset")
+        except RuntimeError as e:
+            print(f"STAC loading failed: {e}")
+            print("Falling back to synthetic dataset. To use real data, ensure network connectivity.")
+            dataset = SyntheticDataset(num_samples=args.synthetic_samples, seed=args.seed)
+    
     train_dataset, val_dataset = split_dataset(dataset, validation_split=args.validation_split, seed=args.seed)
     train_loader = build_dataloader(train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True)
     val_loader = build_dataloader(val_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
