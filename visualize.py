@@ -82,6 +82,35 @@ def save_band_grays(sample, pred, out_dir: Path) -> None:
         plt.close(fig)
 
 
+def _format_band_scores(scores: np.ndarray, band_names: list[str]) -> str:
+    pairs = sorted(zip(band_names, scores.tolist()), key=lambda item: item[1], reverse=True)
+    return ", ".join(f"{band}:{score:.4f}" for band, score in pairs)
+
+
+def _input_band_importance(model: EnhancedDSen2, sample: dict, device: torch.device) -> np.ndarray:
+    base_input = sample["input"].unsqueeze(0).to(device)
+    with torch.no_grad():
+        baseline = model(base_input)
+
+    scores = []
+    for band_index in range(base_input.shape[1]):
+        perturbed = base_input.clone()
+        perturbed[:, band_index : band_index + 1, :, :] = 0.0
+        with torch.no_grad():
+            output = model(perturbed)
+        delta = torch.mean(torch.abs(output - baseline)).item()
+        scores.append(delta)
+    return np.asarray(scores, dtype=np.float32)
+
+
+def _block_attention_report(attentions: list[torch.Tensor], band_names: list[str]) -> list[str]:
+    report = []
+    for block_index, attention in enumerate(attentions):
+        scores = attention.detach().mean(dim=0).cpu().numpy()
+        report.append(f"block_{block_index}: {_format_band_scores(scores, band_names)}")
+    return report
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", type=Path, required=True)
@@ -120,11 +149,18 @@ def main():
         sample = dataset[i]
         inp = sample["input"].unsqueeze(0).to(device)
         with torch.no_grad():
-            pred = model(inp).cpu()
+            pred, attentions = model.forward_with_attention(inp)
+            pred = pred.cpu()
 
         comp_path = args.output_dir / f"sample_{i}_comparison.png"
         save_comparison(sample, pred, comp_path)
         save_band_grays(sample, pred, args.output_dir / f"sample_{i}_bands")
+        band_importance = _input_band_importance(model, sample, device)
+        input_band_names = [f"input_{index}" for index in range(band_importance.shape[0])]
+        feature_band_names = [f"feat_{index}" for index in range(attentions[0].shape[1])] if attentions else []
+        print(f"Sample {i} input-band occlusion: {_format_band_scores(band_importance, input_band_names)}")
+        for line in _block_attention_report(attentions, feature_band_names):
+            print(f"Sample {i} {line}")
         print(f"Wrote visuals for sample {i} -> {comp_path}")
 
 

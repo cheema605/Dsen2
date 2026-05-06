@@ -26,6 +26,10 @@ class ChannelAttention(nn.Module):
         weights = self.reweight(self.pool(x))
         return x * weights
 
+    def forward_with_weights(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        weights = self.reweight(self.pool(x))
+        return x * weights, weights.squeeze(-1).squeeze(-1)
+
 
 class HighPassFilter(nn.Module):
     """Fixed depthwise Laplacian high-pass filter with normalized weights."""
@@ -67,6 +71,15 @@ class EnhancedResidualBlock(nn.Module):
         fused = self.fuse(torch.cat([path, high_frequency], dim=1))
         return residual + fused
 
+    def forward_with_attention(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        residual = x
+        path = self.activation(self.conv1(x))
+        path = self.conv2(path)
+        path, attention = self.channel_attention.forward_with_weights(path)
+        high_frequency = self.high_pass(residual)
+        fused = self.fuse(torch.cat([path, high_frequency], dim=1))
+        return residual + fused, attention
+
 
 class EnhancedDSen2(nn.Module):
     """Enhanced DSen2 backbone for 10-channel Sentinel-2 inputs."""
@@ -98,3 +111,14 @@ class EnhancedDSen2(nn.Module):
         features = self.body_fuse(features)
         features = features + shallow
         return self.tail(features)
+
+    def forward_with_attention(self, x: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        shallow = self.head(x)
+        features = shallow
+        attentions: list[torch.Tensor] = []
+        for block in self.body:
+            features, attention = block.forward_with_attention(features)
+            attentions.append(attention)
+        features = self.body_fuse(features)
+        features = features + shallow
+        return self.tail(features), attentions
