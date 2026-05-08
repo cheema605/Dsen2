@@ -75,6 +75,7 @@ def train_one_epoch(
     criterion: nn.Module,
     device: torch.device,
     clip_norm: float,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> float:
     model.train()
     running_squared_error = 0.0
@@ -244,7 +245,10 @@ def main() -> None:
     ).to(device)
 
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=5, verbose=True
+    )
 
     best_val_rmse = float("inf")
     last_checkpoint = args.checkpoint_dir / "enhanced_dsen2_last.pt"
@@ -260,6 +264,7 @@ def main() -> None:
             clip_norm=TRAINING.gradient_clip_norm,
         )
         val_rmse = evaluate(model, val_loader, device)
+        scheduler.step(val_rmse)
 
         save_checkpoint(last_checkpoint, model, optimizer, epoch, best_val_rmse)
         if val_rmse < best_val_rmse:

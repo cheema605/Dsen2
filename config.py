@@ -47,7 +47,7 @@ class TrainingConfig:
     batch_size: int = 8
     num_workers: int = 4
     epochs: int = 50
-    learning_rate: float = 1e-5
+    learning_rate: float = 1e-4
     gradient_clip_norm: float = 1.0
     validation_split: float = 0.2
     seed: int = 42

@@ -167,7 +167,7 @@ Estimates full-epoch time based on measured per-sample latency.
   - Concatenation + 1×1 fusion + residual add
 - **Output**: 6-band enhanced 20m target bands
 - **Loss**: MSE
-- **Optimizer**: Adam, lr=1e-5, gradient clip norm=1.0
+- **Optimizer**: SGD (momentum=0.9), initial lr=1e-4, step-based scheduling (÷2 if val loss plateaus for 5 epochs), gradient clip norm=1.0
 
 ## Platform-Specific Notes
 
