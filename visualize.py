@@ -39,24 +39,45 @@ def _rgb_from_tensor(tensor: torch.Tensor, channels: Tuple[int, int, int]) -> np
 
 def save_comparison(sample, pred, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # 1. Guide uses actual RGB bands (B04, B03, B02 at indices 2, 1, 0)
     guide_rgb = _rgb_from_tensor(sample["guide_20m"], (2, 1, 0))
-    target_rgb = _rgb_from_tensor(sample["target"], (0, 1, 2))
-    pred_rgb = _rgb_from_tensor(pred, (0, 1, 2))
-    target = sample["target"].detach().cpu().numpy()
+    
+    # 2. Extract arrays for Target and Prediction
+    target_array = sample["target"].detach().cpu().numpy()
     pred_array = pred.detach().cpu().numpy()
     if pred_array.ndim == 4:
         pred_array = pred_array[0]
-    error_map = np.mean(np.abs(target - pred_array), axis=0)
+        
+    # 3. Grab the first 3 predicted bands (B05, B06, B07) to use as False-Color RGB
+    target_fc = np.transpose(target_array[[0, 1, 2], :, :], (1, 2, 0))
+    pred_fc = np.transpose(pred_array[[0, 1, 2], :, :], (1, 2, 0))
+    
+    # 4. Calculate the visual scale ONLY from the ground truth Target
+    t_mn = float(np.min(target_fc))
+    t_mx = float(np.max(target_fc))
+    
+    def scale(img):
+        if t_mx <= t_mn: return np.zeros_like(img)
+        return np.clip((img - t_mn) / (t_mx - t_mn), 0, 1)
 
+    target_rgb = scale(target_fc)
+    pred_rgb = scale(pred_fc)
+    
+    # 5. Calculate Error
+    error_map = np.mean(np.abs(target_array - pred_array), axis=0)
+
+    # Plotting
     fig, axes = plt.subplots(1, 4, figsize=(16, 4))
     axes[0].imshow(guide_rgb)
-    axes[0].set_title("Guide (20m)")
+    axes[0].set_title("Guide (20m True Color)")
     axes[1].imshow(pred_rgb)
-    axes[1].set_title("Prediction")
+    axes[1].set_title("Prediction (False Color)")
     axes[2].imshow(target_rgb)
-    axes[2].set_title("Target")
+    axes[2].set_title("Target (False Color)")
     axes[3].imshow(_normalize_for_display(error_map), cmap="magma")
     axes[3].set_title("Mean Abs Error")
+    
     for ax in axes:
         ax.axis("off")
     fig.tight_layout()
