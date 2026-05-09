@@ -246,9 +246,16 @@ def main() -> None:
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=5, verbose=True
-    )
+    try:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=5, verbose=True  # type: ignore[call-arg]
+        )
+    except TypeError as exc:
+        if "verbose" not in str(exc):
+            raise
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=5
+        )
 
     best_val_rmse = float("inf")
     last_checkpoint = args.checkpoint_dir / "enhanced_dsen2_last.pt"
